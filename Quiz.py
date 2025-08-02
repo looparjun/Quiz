@@ -1,191 +1,207 @@
 import streamlit as st
-import random
 import time
-from threading import Timer
+import random
+import threading
+import firebase_admin
+from firebase_admin import credentials, firestore, auth
+from google.auth.exceptions import GoogleAuthError
 
-st.set_page_config(page_title="Nepali Quiz Game", page_icon="🧠", layout="centered")
+# ---- Firebase Setup ----
+FIREBASE_CRED_PATH = "firebase_credentials.json"  # You must create/download your Firebase Admin SDK JSON here
+if not firebase_admin._apps:
+    cred = credentials.Certificate(FIREBASE_CRED_PATH)
+    firebase_admin.initialize_app(cred)
+db = firestore.client()
 
-# -------- Styling --------
-st.markdown("""
-<style>
-.title { text-align: center; font-size: 2.5em; color: #00FFAA; }
-.subtitle { text-align: center; font-size: 1.3em; color: #FFDD00; margin-bottom: 30px; }
-.question { font-size: 1.3em; font-weight: bold; }
-.option-btn {
-    background-color: #333;
-    padding: 10px 20px;
-    border-radius: 8px;
-    color: white;
-    text-align: center;
-    margin: 5px;
-    cursor: pointer;
-    transition: all 0.3s;
-}
-.option-btn:hover {
-    background-color: #555;
-}
-.timer {
-    font-weight: bold;
-    font-size: 1.5em;
-    color: #FF5555;
-    text-align: center;
-    margin-top: 10px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# -------- Question Bank --------
-questions = [
+# ---- Quiz Questions ----
+QUESTIONS = [
     {"question": "What is the capital of Nepal?", "options": ["Pokhara", "Lalitpur", "Kathmandu", "Biratnagar"], "answer": "Kathmandu"},
     {"question": "What is 12 x 8?", "options": ["96", "108", "84", "88"], "answer": "96"},
     {"question": "Who discovered gravity?", "options": ["Einstein", "Newton", "Galileo", "Tesla"], "answer": "Newton"},
     {"question": "Which is the largest planet?", "options": ["Earth", "Mars", "Saturn", "Jupiter"], "answer": "Jupiter"},
     {"question": "नेपालको राष्ट्रिय जनावर के हो?", "options": ["गाई", "कुकुर", "बाघ", "भालु"], "answer": "गाई"},
     {"question": "The Great Wall is located in?", "options": ["Japan", "India", "China", "Thailand"], "answer": "China"},
-    {"question": "Kathmandu lies in which valley?", "options": ["Pokhara", "Terai", "Bagmati", "Kathmandu"], "answer": "Kathmandu"},
-    {"question": "5 + 9 * 2 = ?", "options": ["28", "23", "18", "17"], "answer": "23"},
-    {"question": "Who is known as the Light of Asia?", "options": ["Ashoka", "Buddha", "Gandhi", "Lincoln"], "answer": "Buddha"},
-    {"question": "Which gas do plants need?", "options": ["Nitrogen", "Oxygen", "Carbon Dioxide", "Hydrogen"], "answer": "Carbon Dioxide"},
-] * 5  # 50 questions
+    # Add more questions as needed (50+)
+]
 
-random.shuffle(questions)
+random.shuffle(QUESTIONS)
 
-# -------- Session State Setup --------
-if "page" not in st.session_state:
-    st.session_state.page = "login"
+# ---- Streamlit Layout & Logic ----
+st.set_page_config(page_title="🔥 Real-Time Multiplayer Quiz", layout="centered")
+
+# CSS for animation and styling
+st.markdown("""
+<style>
+body {
+    background: linear-gradient(120deg, #2980b9, #8e44ad);
+    color: white;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+h1, h2, h3 {
+    text-align: center;
+}
+button {
+    background-color: #34495e;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 24px;
+    margin: 5px;
+    font-size: 1.1rem;
+    color: #ecf0f1;
+    transition: background-color 0.3s ease;
+}
+button:hover {
+    background-color: #2ecc71;
+    cursor: pointer;
+}
+.timer {
+    font-size: 2rem;
+    font-weight: bold;
+    text-align: center;
+    margin: 15px 0;
+    animation: pulse 1.5s infinite;
+}
+@keyframes pulse {
+    0% { color: #2ecc71; }
+    50% { color: #e74c3c; }
+    100% { color: #2ecc71; }
+}
+</style>
+""", unsafe_allow_html=True)
+
+# -- Initialize Session State --
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 if "score" not in st.session_state:
     st.session_state.score = 0
-if "user" not in st.session_state:
-    st.session_state.user = None
-if "question_index" not in st.session_state:
-    st.session_state.question_index = 0
-if "leaderboard" not in st.session_state:
-    # Dict: username -> highest score
-    st.session_state.leaderboard = {}
-if "timer_start" not in st.session_state:
-    st.session_state.timer_start = None
-if "time_up" not in st.session_state:
-    st.session_state.time_up = False
-if "answered" not in st.session_state:
-    st.session_state.answered = False
+if "question_idx" not in st.session_state:
+    st.session_state.question_idx = 0
+if "user_email" not in st.session_state:
+    st.session_state.user_email = ""
+if "timer" not in st.session_state:
+    st.session_state.timer = 3
+if "answer_given" not in st.session_state:
+    st.session_state.answer_given = False
+if "highest_score" not in st.session_state:
+    st.session_state.highest_score = 0
 
-# -------- Timer Functions --------
-def start_timer():
-    st.session_state.timer_start = time.time()
-    st.session_state.time_up = False
-    st.session_state.answered = False
+# -- Helper Functions --
 
-def check_timer():
-    if st.session_state.timer_start:
-        elapsed = time.time() - st.session_state.timer_start
-        remaining = 3 - elapsed
-        if remaining <= 0:
-            st.session_state.time_up = True
-            if not st.session_state.answered:
-                st.session_state.score = 0
-            return 0
-        return remaining
-    return 3
+def login_user(email, password):
+    try:
+        user = auth.get_user_by_email(email)
+        st.session_state.user_email = email
+        st.session_state.logged_in = True
+        st.success("Logged in successfully!")
+    except auth.UserNotFoundError:
+        st.error("User not found! Please register.")
+    except Exception as e:
+        st.error(f"Login failed: {e}")
 
-def next_question():
-    st.session_state.question_index += 1
-    if st.session_state.question_index >= len(questions):
-        st.session_state.page = "leaderboard"
+def register_user(email, password):
+    try:
+        auth.create_user(email=email, password=password)
+        st.success("Registered successfully! Please login.")
+    except Exception as e:
+        st.error(f"Registration failed: {e}")
+
+def update_leaderboard(email, score):
+    user_ref = db.collection("leaderboard").document(email)
+    doc = user_ref.get()
+    if doc.exists:
+        current_high = doc.to_dict().get("score", 0)
+        if score > current_high:
+            user_ref.set({"score": score})
     else:
-        start_timer()
+        user_ref.set({"score": score})
+
+def get_leaderboard():
+    docs = db.collection("leaderboard").order_by("score", direction=firestore.Query.DESCENDING).limit(10).stream()
+    return [(doc.id, doc.to_dict()["score"]) for doc in docs]
+
+# Timer countdown mechanism
+def countdown():
+    while st.session_state.timer > 0 and not st.session_state.answer_given:
+        time.sleep(1)
+        st.session_state.timer -= 1
+        st.experimental_rerun()
+    if st.session_state.timer == 0 and not st.session_state.answer_given:
+        st.session_state.score = 0
+        st.session_state.answer_given = True
         st.experimental_rerun()
 
-def reset_game():
-    st.session_state.page = "login"
-    st.session_state.score = 0
-    st.session_state.question_index = 0
-    st.session_state.user = None
-    st.session_state.timer_start = None
-    st.session_state.time_up = False
-    st.session_state.answered = False
+# -- UI: Login/Register --
+if not st.session_state.logged_in:
+    st.title("👋 Welcome to the Real-Time Quiz!")
+    tab1, tab2 = st.tabs(["Login", "Register"])
 
-# -------- Login and Register --------
-def login(username, password):
-    if username and password:
-        st.session_state.user = username
-        st.session_state.page = "quiz"
-        start_timer()
-
-def register(username, password):
-    if username and password:
-        # Just register as login for demo
-        st.session_state.user = username
-        st.session_state.page = "quiz"
-        start_timer()
-
-# -------- Main App --------
-if st.session_state.page == "login":
-    st.markdown("<div class='title'>🧠 Nepali Quiz Game</div>", unsafe_allow_html=True)
-    st.markdown("<div class='subtitle'>Login or Register to Begin</div>", unsafe_allow_html=True)
-    
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-
-    col1, col2 = st.columns(2)
-    with col1:
+    with tab1:
+        login_email = st.text_input("Email", key="login_email")
+        login_password = st.text_input("Password", type="password", key="login_pass")
         if st.button("Login"):
-            login(username, password)
-    with col2:
+            login_user(login_email, login_password)
+
+    with tab2:
+        reg_email = st.text_input("Email", key="reg_email")
+        reg_password = st.text_input("Password", type="password", key="reg_pass")
         if st.button("Register"):
-            register(username, password)
+            register_user(reg_email, reg_password)
 
-elif st.session_state.page == "quiz":
-    # Show question & timer
-    q = questions[st.session_state.question_index]
-    st.markdown(f"<div class='question'>{q['question']}</div>", unsafe_allow_html=True)
-    
-    remaining = check_timer()
-    st.markdown(f"<div class='timer'>⏰ Time left: {remaining:.1f} seconds</div>", unsafe_allow_html=True)
+else:
+    # -- Quiz Section --
+    st.title("🧠 Quiz Time!")
+    q = QUESTIONS[st.session_state.question_idx]
+    st.subheader(f"Question {st.session_state.question_idx + 1} of {len(QUESTIONS)}")
+    st.markdown(f"### {q['question']}")
 
-    if st.session_state.time_up:
-        st.error("⏳ Time's up! Score reset to 0.")
-        st.session_state.score = 0
-        st.session_state.time_up = False
-        st.button("Next Question", on_click=next_question)
-    else:
-        # Disable options if answered or time's up
-        disabled = st.session_state.answered or st.session_state.time_up
-        
+    # Timer display
+    st.markdown(f"<div class='timer'>⏳ Time left: {st.session_state.timer}</div>", unsafe_allow_html=True)
+
+    if not st.session_state.answer_given:
+        # Display options as buttons
         for option in q["options"]:
-            if st.button(option, disabled=disabled, use_container_width=True):
-                st.session_state.answered = True
+            if st.button(option):
+                st.session_state.answer_given = True
                 if option == q["answer"]:
-                    st.success("✅ Correct!")
+                    st.success("🎉 Correct!")
                     st.session_state.score += 1
                 else:
-                    st.error(f"❌ Wrong! Correct answer: {q['answer']}")
+                    st.error(f"❌ Wrong! The correct answer was: {q['answer']}")
                     st.session_state.score = 0
-                # Update leaderboard on every answered question
-                current_score = st.session_state.leaderboard.get(st.session_state.user, 0)
-                if st.session_state.score > current_score:
-                    st.session_state.leaderboard[st.session_state.user] = st.session_state.score
-                st.button("Next Question", on_click=next_question)
 
-    st.info(f"Question {st.session_state.question_index + 1} / {len(questions)}")
-    st.info(f"Current Score: {st.session_state.score}")
+                # Update leaderboard in Firestore
+                update_leaderboard(st.session_state.user_email, st.session_state.score)
 
-elif st.session_state.page == "leaderboard":
-    st.title("🏆 Quiz Complete!")
-    st.success(f"{st.session_state.user}, your final score is {st.session_state.score} / {len(questions)}")
-    
-    # Add/update leaderboard record
-    current_score = st.session_state.leaderboard.get(st.session_state.user, 0)
-    if st.session_state.score > current_score:
-        st.session_state.leaderboard[st.session_state.user] = st.session_state.score
+                # Show "Next" button after answering
+                st.experimental_rerun()
+    else:
+        if st.button("Next Question"):
+            st.session_state.answer_given = False
+            st.session_state.timer = 3
+            st.session_state.question_idx += 1
+            if st.session_state.question_idx >= len(QUESTIONS):
+                st.session_state.question_idx = 0  # restart quiz or you can switch page to leaderboard
+            st.experimental_rerun()
 
-    st.subheader("Real-Time Leaderboard (Top Scores)")
-    sorted_leaderboard = sorted(st.session_state.leaderboard.items(), key=lambda x: x[1], reverse=True)
-    for i, (user, score) in enumerate(sorted_leaderboard[:10]):
-        st.write(f"{i+1}. {user} — {score}")
+    st.write(f"Current Score: {st.session_state.score}")
 
-    # Auto refresh leaderboard every 2 seconds (without user refresh)
-    time.sleep(2)
-    st.experimental_rerun()
+    # Show leaderboard live (poll every 5 seconds)
+    st.subheader("🏆 Leaderboard (Top Scores)")
 
-    if st.button("Play Again"):
-        reset_game()
+    leaderboard = get_leaderboard()
+    for idx, (user, score) in enumerate(leaderboard):
+        st.write(f"{idx + 1}. {user} — {score}")
+
+    # Start countdown thread (only once per question)
+    if not st.session_state.answer_given and st.session_state.timer == 3:
+        threading.Thread(target=countdown, daemon=True).start()
+
+    st.write("---")
+    if st.button("Logout"):
+        st.session_state.logged_in = False
+        st.session_state.score = 0
+        st.session_state.question_idx = 0
+        st.session_state.user_email = ""
+        st.session_state.timer = 3
+        st.session_state.answer_given = False
+        st.experimental_rerun()
