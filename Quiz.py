@@ -7,7 +7,7 @@ from firebase_admin import credentials, firestore, auth
 from google.auth.exceptions import GoogleAuthError
 
 # ---- Firebase Setup ----
-FIREBASE_CRED_PATH = "firebase_credentials.json"  # You must create/download your Firebase Admin SDK JSON here
+FIREBASE_CRED_PATH = "firebase_credentials.json"  # Add your Firebase Admin SDK JSON file path here
 if not firebase_admin._apps:
     cred = credentials.Certificate(FIREBASE_CRED_PATH)
     firebase_admin.initialize_app(cred)
@@ -21,15 +21,15 @@ QUESTIONS = [
     {"question": "Which is the largest planet?", "options": ["Earth", "Mars", "Saturn", "Jupiter"], "answer": "Jupiter"},
     {"question": "नेपालको राष्ट्रिय जनावर के हो?", "options": ["गाई", "कुकुर", "बाघ", "भालु"], "answer": "गाई"},
     {"question": "The Great Wall is located in?", "options": ["Japan", "India", "China", "Thailand"], "answer": "China"},
-    # Add more questions as needed (50+)
+    # Add more questions here, ideally 50+
 ]
 
 random.shuffle(QUESTIONS)
 
-# ---- Streamlit Layout & Logic ----
+# ---- Streamlit UI & Logic ----
 st.set_page_config(page_title="🔥 Real-Time Multiplayer Quiz", layout="centered")
 
-# CSS for animation and styling
+# CSS Styling
 st.markdown("""
 <style>
 body {
@@ -69,7 +69,7 @@ button:hover {
 </style>
 """, unsafe_allow_html=True)
 
-# -- Initialize Session State --
+# Initialize session state vars
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "score" not in st.session_state:
@@ -79,14 +79,11 @@ if "question_idx" not in st.session_state:
 if "user_email" not in st.session_state:
     st.session_state.user_email = ""
 if "timer" not in st.session_state:
-    st.session_state.timer = 3
+    st.session_state.timer = 10
 if "answer_given" not in st.session_state:
     st.session_state.answer_given = False
-if "highest_score" not in st.session_state:
-    st.session_state.highest_score = 0
 
-# -- Helper Functions --
-
+# Auth functions
 def login_user(email, password):
     try:
         user = auth.get_user_by_email(email)
@@ -119,7 +116,6 @@ def get_leaderboard():
     docs = db.collection("leaderboard").order_by("score", direction=firestore.Query.DESCENDING).limit(10).stream()
     return [(doc.id, doc.to_dict()["score"]) for doc in docs]
 
-# Timer countdown mechanism
 def countdown():
     while st.session_state.timer > 0 and not st.session_state.answer_given:
         time.sleep(1)
@@ -130,7 +126,7 @@ def countdown():
         st.session_state.answer_given = True
         st.experimental_rerun()
 
-# -- UI: Login/Register --
+# UI logic
 if not st.session_state.logged_in:
     st.title("👋 Welcome to the Real-Time Quiz!")
     tab1, tab2 = st.tabs(["Login", "Register"])
@@ -148,17 +144,14 @@ if not st.session_state.logged_in:
             register_user(reg_email, reg_password)
 
 else:
-    # -- Quiz Section --
+    # Quiz screen
     st.title("🧠 Quiz Time!")
     q = QUESTIONS[st.session_state.question_idx]
     st.subheader(f"Question {st.session_state.question_idx + 1} of {len(QUESTIONS)}")
     st.markdown(f"### {q['question']}")
-
-    # Timer display
     st.markdown(f"<div class='timer'>⏳ Time left: {st.session_state.timer}</div>", unsafe_allow_html=True)
 
     if not st.session_state.answer_given:
-        # Display options as buttons
         for option in q["options"]:
             if st.button(option):
                 st.session_state.answer_given = True
@@ -166,34 +159,28 @@ else:
                     st.success("🎉 Correct!")
                     st.session_state.score += 1
                 else:
-                    st.error(f"❌ Wrong! The correct answer was: {q['answer']}")
+                    st.error(f"❌ Wrong! Correct answer was: {q['answer']}")
                     st.session_state.score = 0
 
-                # Update leaderboard in Firestore
                 update_leaderboard(st.session_state.user_email, st.session_state.score)
-
-                # Show "Next" button after answering
                 st.experimental_rerun()
     else:
         if st.button("Next Question"):
             st.session_state.answer_given = False
-            st.session_state.timer = 3
+            st.session_state.timer = 10
             st.session_state.question_idx += 1
             if st.session_state.question_idx >= len(QUESTIONS):
-                st.session_state.question_idx = 0  # restart quiz or you can switch page to leaderboard
+                st.session_state.question_idx = 0
             st.experimental_rerun()
 
     st.write(f"Current Score: {st.session_state.score}")
 
-    # Show leaderboard live (poll every 5 seconds)
     st.subheader("🏆 Leaderboard (Top Scores)")
-
     leaderboard = get_leaderboard()
     for idx, (user, score) in enumerate(leaderboard):
         st.write(f"{idx + 1}. {user} — {score}")
 
-    # Start countdown thread (only once per question)
-    if not st.session_state.answer_given and st.session_state.timer == 3:
+    if not st.session_state.answer_given and st.session_state.timer == 10:
         threading.Thread(target=countdown, daemon=True).start()
 
     st.write("---")
@@ -202,6 +189,6 @@ else:
         st.session_state.score = 0
         st.session_state.question_idx = 0
         st.session_state.user_email = ""
-        st.session_state.timer = 3
+        st.session_state.timer = 10
         st.session_state.answer_given = False
         st.experimental_rerun()
